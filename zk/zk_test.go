@@ -3,6 +3,7 @@ package zk
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -362,6 +363,45 @@ func TestAuth(t *testing.T) {
 		t.Fatalf("Get returned nil Stat")
 	} else if len(data) != 4 {
 		t.Fatalf("Get returned wrong data length")
+	}
+}
+
+func TestResendZkAuthWithError(t *testing.T) {
+	ts, err := StartTestCluster(1, nil, logWriter{t: t, p: "[ZKERR] "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ts.Stop()
+	zk, _, err := ts.ConnectAll()
+	if err != nil {
+		t.Fatalf("Connect returned error: %+v", err)
+	}
+	defer zk.Close()
+
+	zk.AddAuth("digest", []byte("user:password"))
+
+	zk.resendZkAuthWithError = true
+	done := make(chan struct{})
+	zk.resendZkAuth(done)
+	<-done
+	err = doWithTimeout(func() { zk.flushRequests(errors.New("foo")) }, 5*time.Second)
+	if err != nil {
+		t.Fatal("do flushRequests timeout")
+	}
+}
+
+func doWithTimeout(fn func(), timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+
+	select {
+	case <-time.After(timeout):
+		return errors.New("timeout")
+	case <-done:
+		return nil
 	}
 }
 
