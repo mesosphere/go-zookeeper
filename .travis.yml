@@ -12,7 +12,7 @@ branches:
     - master
 
 before_install:
-  - wget http://apache.cs.utah.edu/zookeeper/zookeeper-${zk_version}/zookeeper-${zk_version}.tar.gz
+  - wget http://archive.apache.org/dist/zookeeper/zookeeper-${zk_version}/zookeeper-${zk_version}.tar.gz
   - tar -zxvf zookeeper*tar.gz && zip -d zookeeper-${zk_version}/contrib/fatjar/zookeeper-${zk_version}-fatjar.jar 'META-INF/*.SF' 'META-INF/*.DSA'
   - go get github.com/mattn/goveralls
   - go get golang.org/x/tools/cmd/cover
