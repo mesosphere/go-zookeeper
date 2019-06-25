@@ -99,9 +99,10 @@ type Conn struct {
 	closeChan    chan struct{} // channel to tell send loop stop
 
 	// Debug (used by unit tests)
-	reconnectLatch   chan struct{}
-	setWatchLimit    int
-	setWatchCallback func([]*setWatchesRequest)
+	reconnectLatch        chan struct{}
+	setWatchLimit         int
+	setWatchCallback      func([]*setWatchesRequest)
+	resendZkAuthWithError bool
 
 	// Debug (for recurring re-auth hang) test
 	// These variables shouldn't be used or modified as part of normal
@@ -488,7 +489,7 @@ func (c *Conn) sendRequest(
 		opcode:     opcode,
 		pkt:        req,
 		recvStruct: res,
-		recvChan:   make(chan response, 1),
+		recvChan:   make(chan response, 2),
 		recvFunc:   recvFunc,
 	}
 
@@ -812,6 +813,13 @@ func (c *Conn) sendData(req *request) error {
 	}
 	c.requests[req.xid] = req
 	c.requestsLock.Unlock()
+
+	if req.opcode == opSetAuth && c.resendZkAuthWithError {
+		err := errors.New("send auth failed")
+		req.recvChan <- response{-1, err}
+		c.conn.Close()
+		return err
+	}
 
 	c.conn.SetWriteDeadline(time.Now().Add(c.recvTimeout))
 	_, err = c.conn.Write(c.buf[:n+4])
