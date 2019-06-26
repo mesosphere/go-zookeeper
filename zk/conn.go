@@ -99,9 +99,9 @@ type Conn struct {
 	closeChan    chan struct{} // channel to tell send loop stop
 
 	// Debug (used by unit tests)
-	reconnectLatch        chan struct{}
-	setWatchLimit         int
-	setWatchCallback      func([]*setWatchesRequest)
+	reconnectLatch                     chan struct{}
+	setWatchLimit                      int
+	setWatchCallback                   func([]*setWatchesRequest)
 	sendDataAfterRequestQueuedTestHook func(*request) error
 
 	// Debug (for recurring re-auth hang) test
@@ -814,7 +814,6 @@ func (c *Conn) sendData(req *request) error {
 	c.requests[req.xid] = req
 	c.requestsLock.Unlock()
 
-	var err error
 	if c.sendDataAfterRequestQueuedTestHook != nil {
 		err = c.sendDataAfterRequestQueuedTestHook(req)
 	}
