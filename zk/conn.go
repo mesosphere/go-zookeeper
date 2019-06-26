@@ -102,7 +102,7 @@ type Conn struct {
 	reconnectLatch        chan struct{}
 	setWatchLimit         int
 	setWatchCallback      func([]*setWatchesRequest)
-	resendZkAuthWithError bool
+	sendDataAfterRequestQueuedTestHook func(*request) error
 
 	// Debug (for recurring re-auth hang) test
 	// These variables shouldn't be used or modified as part of normal
@@ -814,16 +814,16 @@ func (c *Conn) sendData(req *request) error {
 	c.requests[req.xid] = req
 	c.requestsLock.Unlock()
 
-	if req.opcode == opSetAuth && c.resendZkAuthWithError {
-		err := errors.New("send auth failed")
-		req.recvChan <- response{-1, err}
-		c.conn.Close()
-		return err
+	var err error
+	if c.sendDataAfterRequestQueuedTestHook != nil {
+		err = c.sendDataAfterRequestQueuedTestHook(req)
+	}
+	if err == nil {
+		c.conn.SetWriteDeadline(time.Now().Add(c.recvTimeout))
+		_, err = c.conn.Write(c.buf[:n+4])
+		c.conn.SetWriteDeadline(time.Time{})
 	}
 
-	c.conn.SetWriteDeadline(time.Now().Add(c.recvTimeout))
-	_, err = c.conn.Write(c.buf[:n+4])
-	c.conn.SetWriteDeadline(time.Time{})
 	if err != nil {
 		req.recvChan <- response{-1, err}
 		c.conn.Close()

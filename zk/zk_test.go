@@ -380,7 +380,12 @@ func TestResendZkAuthWithError(t *testing.T) {
 
 	zk.AddAuth("digest", []byte("user:password"))
 
-	zk.resendZkAuthWithError = true
+	zk.sendDataAfterRequestQueuedTestHook = func(req *request) error {
+		if req.opcode == opSetAuth {
+			return errors.New("send auth failed")
+		}
+		return nil
+	}
 	done := make(chan struct{})
 	zk.resendZkAuth(done)
 	<-done
