@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -66,6 +67,14 @@ type authCreds struct {
 	auth   []byte
 }
 
+type reconnectParamsType struct {
+	minTime  float64
+	maxTime  float64
+	numSteps int
+	logA     float64
+	logB     float64
+}
+
 type Conn struct {
 	lastZxid         int64
 	sessionID        int64
@@ -110,6 +119,8 @@ type Conn struct {
 	// See `TestRecurringReAuthHang`
 	debugCloseRecvLoop int32
 	debugReauthDone    chan struct{}
+
+	reconnectParams  reconnectParamsType
 
 	logger  Logger
 	logInfo bool // true if information messages are logged; false if only errors are logged
@@ -209,6 +220,10 @@ func Connect(servers []string, sessionTimeout time.Duration, options ...connOpti
 		requests:        make(map[int32]*request),
 		watchers:        make(map[watchPathType][]chan Event),
 		passwd:          emptyPassword,
+		reconnectParams: reconnectParamsType{
+			minTime:  1,
+			maxTime:  300,
+		},
 		logger:          DefaultLogger,
 		logInfo:         true, // default is true for backwards compatability
 		buf:             make([]byte, bufferSize),
@@ -357,6 +372,72 @@ func (c *Conn) setDebugCloseRecvLoop(v bool) {
 func (c *Conn) SetLogger(l Logger) {
 	c.logger = l
 }
+// Set reconnect latch
+func (c *Conn) SetReconnectLatch() {
+	c.reconnectLatch = make(chan struct{})
+}
+
+// Close latch to allow reconnect
+func (c *Conn) CloseReconnectLatch() {
+	if c.reconnectLatch != nil {
+		close(c.reconnectLatch)
+		c.reconnectLatch = nil
+	}
+}
+
+func (c *Conn) recalcConnectTimes() {
+	if c.reconnectParams.numSteps > 0 {
+		dec := 1
+		if c.reconnectParams.numSteps == 1 {
+			dec = 0
+		}
+		c.reconnectParams.logB = math.Log(c.reconnectParams.maxTime / c.reconnectParams.minTime) /
+			float64(c.reconnectParams.numSteps - dec)
+		c.reconnectParams.logA = c.reconnectParams.maxTime /
+			math.Exp(c.reconnectParams.logB * float64(c.reconnectParams.numSteps))
+	}
+}
+
+// SetMinReconnectTime sets minimum sleep time before reconnecting
+func (c *Conn) SetMinReconnectTime(t time.Duration) {
+	if (t.Seconds() < 1) ||
+		(t.Seconds() > c.reconnectParams.maxTime) {
+			c.logger.Printf("Min reconnect time (%v) cannot be less than 1s or more than max reconnect time (%v).",
+				t.Seconds(), c.reconnectParams.maxTime)
+		return
+	}
+	c.reconnectParams.minTime = t.Seconds()
+
+	c.recalcConnectTimes()
+}
+
+// SetMaxReconnectTime sets maximum sleep time before reconnecting
+func (c *Conn) SetMaxReconnectTime(t time.Duration) {
+	if t.Seconds() < c.reconnectParams.minTime {
+		c.logger.Printf("Max reconnect time (%v) cannot be less than min reconnect time (%v).",
+			t.Seconds(), c.reconnectParams.minTime)
+		return
+	}
+	c.reconnectParams.maxTime = t.Seconds()
+
+	c.recalcConnectTimes()
+}
+
+// SetStepsToMaxTime number of steps to go from min sleep time to max
+// Increments are logarithmic
+func (c *Conn) SetStepsToMaxTime(steps int) {
+	if steps >= 0 {
+		c.reconnectParams.numSteps = steps
+
+		if c.reconnectParams.numSteps > 0 {
+			c.recalcConnectTimes()
+		} else {
+			c.logger.Printf("Steps set to 0, defaulting to retry every second.")
+		}
+	} else {
+		c.logger.Printf("Number of steps (%v) cannot be less than 0", steps)
+	}
+}
 
 func (c *Conn) setTimeouts(sessionTimeoutMs int32) {
 	c.sessionTimeoutMs = sessionTimeoutMs
@@ -384,6 +465,8 @@ func (c *Conn) sendEvent(evt Event) {
 
 func (c *Conn) connect() error {
 	var retryStart bool
+	var timeout time.Duration
+	reconnectTimes := 0
 	for {
 		c.serverMu.Lock()
 		c.server, retryStart = c.hostProvider.Next()
@@ -391,8 +474,19 @@ func (c *Conn) connect() error {
 		c.setState(StateConnecting)
 		if retryStart {
 			c.flushUnsentRequests(ErrNoServer)
+
+			if c.reconnectParams.numSteps > 0 {
+				if reconnectTimes < c.reconnectParams.numSteps {
+					reconnectTimes++
+				}
+				timeout = time.Duration(c.reconnectParams.logA *
+					math.Exp(c.reconnectParams.logB * float64(reconnectTimes))) * time.Second
+			} else {
+				timeout = time.Second
+			}
+
 			select {
-			case <-time.After(time.Second):
+			case <-time.After(timeout):
 				// pass
 			case <-c.shouldQuit:
 				c.setState(StateDisconnected)
